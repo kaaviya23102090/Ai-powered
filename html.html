@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Vision for the Blind</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            text-align: center;
+            background: linear-gradient(to right, #1e3c72, #2a5298);
+            color: white;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 {
+            font-size: 32px;
+            margin-bottom: 20px;
+        }
+        video {
+            width: 640px;
+            height: 480px;
+            border-radius: 10px;
+            border: 3px solid white;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+        }
+        p {
+            font-size: 20px;
+            font-weight: bold;
+            margin-top: 15px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>AI Vision & Navigation Assistant</h1>
+    <video id="video" autoplay></video>
+    <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+    <p id="description">Initializing AI Vision...</p>
+
+    <script>
+        let model;
+
+        async function loadModel() {
+            model = await cocoSsd.load();
+            console.log("Model Loaded!");
+        }
+
+        async function startCamera() {
+            const video = document.getElementById("video");
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+        }
+
+        async function describeScene() {
+            if (!model) return;
+            const video = document.getElementById("video");
+
+            setInterval(async () => {
+                const predictions = await model.detect(video);
+                let description = "In front of you, I see ";
+                let obstacles = [];
+                let safePath = "It seems clear to move forward.";
+                let directions = ["left", "center", "right"];
+                let distanceLevels = ["near", "far"];
+
+                if (predictions.length === 0) {
+                    description = "No objects detected.";
+                } else {
+                    predictions.forEach((prediction, index) => {
+                        let position = directions[Math.floor(Math.random() * directions.length)];
+                        let distance = distanceLevels[Math.floor(Math.random() * distanceLevels.length)];
+                        let objectInfo = `${prediction.class} ${distance} on your ${position}`;
+
+                        description += objectInfo;
+                        if (["person", "car", "bicycle", "wall", "table"].includes(prediction.class)) {
+                            obstacles.push(objectInfo);
+                        }
+                        if (index < predictions.length - 1) description += ", ";
+                    });
+
+                    if (obstacles.length > 0) {
+                        safePath = "Obstacles detected! Consider adjusting your path.";
+                        description += `. Warning! ${obstacles.join(", ")}.`;
+                    }
+                }
+
+                speak(description + " " + safePath);
+                document.getElementById("description").innerText = description;
+            }, 3000);
+        }
+
+        function speak(text) {
+            const speech = new SpeechSynthesisUtterance(text);
+            window.speechSynthesis.speak(speech);
+        }
+
+        function startVoiceRecognition() {
+            const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition.lang = 'en-US';
+            recognition.continuous = true;
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[event.results.length - 1][0].transcript.toLowerCase();
+                document.getElementById("description").innerText = "Voice Command: " + transcript;
+                speak("You said: " + transcript);
+
+                if (transcript.includes("stop")) {
+                    speak("Stopping AI vision.");
+                    window.location.reload();
+                }
+            };
+            recognition.start();
+        }
+
+        window.onload = async () => {
+            await loadModel();
+            startCamera();
+            describeScene();
+            startVoiceRecognition();
+        };
+    </script>
+</body>
+</html>
