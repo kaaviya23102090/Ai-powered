@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Vision for the Blind</title>
+
+    <!-- Pinned stable CDN versions -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Exo+2:wght@300;400;600&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --primary: #00f5ff;
+            --warn: #ffcc00;
+            --bg-dark: #020b18;
+            --bg-card: rgba(0, 245, 255, 0.04);
+            --border: rgba(0, 245, 255, 0.2);
+            --text: #e0f7fa;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Exo 2', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        body::before {
+            content: '';
+            position: fixed; inset: 0;
+            background-image:
+                linear-gradient(rgba(0,245,255,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0,245,255,0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+            pointer-events: none; z-index: 0;
+        }
+        .container {
+            position: relative; z-index: 1;
+            max-width: 900px; margin: 0 auto; padding: 30px 20px;
+        }
+        header { text-align: center; margin-bottom: 24px; }
+        header h1 {
+            font-family: 'Orbitron', monospace;
+            font-size: clamp(18px, 4vw, 34px); font-weight: 900; letter-spacing: 3px;
+            background: linear-gradient(90deg, var(--primary), #fff, var(--primary));
+            background-size: 200%;
+            -webkit-background-clip: text; 
+            -webkit-text-fill-color: transparent;
+            animation: shimmer 3s linear infinite; text-transform: uppercase;
+        }
+        header p { font-size: 12px; color: rgba(0,245,255,0.5); letter-spacing: 4px; margin-top: 6px; text-transform: uppercase; }
+        @keyframes shimmer { 0%{background-position:0%} 100%{background-position:200%} }
+
+        /* Status Pills */
+        .status-bar { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-bottom:16px; }
+        .status-pill {
+            display:flex; align-items:center; gap:6px; padding:5px 12px;
+            border:1px solid var(--border); border-radius:20px; font-size:10px;
+            letter-spacing:1px; text-transform:uppercase; background:var(--bg-card); transition:all 0.3s;
+        }
+        .status-pill .dot { width:7px; height:7px; border-radius:50%; background:#333; transition:all 0.3s; }
+        .status-pill.active .dot { background:#00ff88; box-shadow:0 0 8px #00ff88; animation:pulse-dot 1.5s ease-in-out infinite; }
+        .status-pill.warn .dot { background:var(--warn); box-shadow:0 0 8px var(--warn); }
+        @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+        /* Camera selector */
+        .camera-selector-wrap {
+            display:none; align-items:center; gap:10px; margin-bottom:12px;
+            padding:10px 14px; background:var(--bg-card); border:1px solid var(--border); border-radius:10px;
+        }
+        .camera-selector-wrap label { font-size:11px; letter-spacing:1px; text-transform:uppercase; color:var(--primary); white-space:nowrap; }
+        .camera-selector-wrap select {
+            flex:1; background:rgba(0,0,0,0.5); border:1px solid var(--border);
+            color:white; padding:6px 10px; border-radius:6px; font-family:'Exo 2',sans-serif; font-size:12px; cursor:pointer; outline:none;
+        }
+
+        /* Camera wrapper */
+        .camera-wrapper {
+            position:relative; border:1px solid var(--border); border-radius:12px;
+            overflow:hidden; background:#000;
+            box-shadow:0 0 40px rgba(0,245,255,0.08); margin-bottom:16px;
+            min-height: 200px;
+        }
+        .camera-wrapper::before, .camera-wrapper::after {
+            content:''; position:absolute; width:20px; height:20px; z-index:3; pointer-events:none;
+        }
+        .camera-wrapper::before { top:10px; left:10px; border-top:2px solid var(--primary); border-left:2px solid var(--primary); }
+        .camera-wrapper::after { bottom:10px; right:10px; border-bottom:2px solid var(--primary); border-right:2px solid var(--primary); }
+
+        video { width:100%; height:auto; display:block; max-height:480px; object-fit:cover; background:#000; }
+        canvas#canvas { display:none; }
+
+        .scan-line {
+            position:absolute; left:0; right:0; height:2px;
+            background:linear-gradient(90deg, transparent, var(--primary), transparent);
+            animation:scan 3s linear infinite; opacity:0.4; pointer-events:none; z-index:2;
+        }
+        @keyframes scan { 0%{top:0} 100%{top:100%} }
+
+        /* Camera error overlay */
+        .camera-error-msg {
+            display:none; position:absolute; inset:0; z-index:10;
+            background:rgba(2,11,24,0.97); flex-direction:column;
+            align-items:center; justify-content:center; gap:14px; padding:30px; text-align:center;
+        }
+        .camera-error-msg.show { display:flex; }
+        .camera-error-msg .err-icon { font-size:44px; }
+        .camera-error-msg h3 { font-family:'Orbitron',monospace; font-size:14px; color:#ff6b6b; letter-spacing:2px; }
+        .camera-error-msg p { font-size:13px; color:rgba(255,255,255,0.55); line-height:1.8; max-width:440px; white-space:pre-line; }
+        .retry-btn {
+            padding:10px 24px; background:rgba(0,245,255,0.1); border:1px solid var(--primary);
+            border-radius:8px; color:var(--primary); font-family:'Orbitron',monospace;
+            font-size:11px; letter-spacing:2px; cursor:pointer; transition:all 0.3s; margin-top:6px;
+        }
+        .retry-btn:hover { background:rgba(0,245,255,0.2); }
+
+        /* Mode Tabs */
+        .mode-tabs {
+            display:flex; gap:8px; margin-bottom:16px;
+            background:rgba(0,0,0,0.3); padding:6px; border-radius:10px; border:1px solid var(--border);
+        }
+        .tab-btn {
+            flex:1; padding:10px; border:none; border-radius:7px; background:transparent;
+            color:rgba(255,255,255,0.4); font-family:'Exo 2',sans-serif; font-size:12px; font-weight:600;
+            letter-spacing:1px; text-transform:uppercase; cursor:pointer; transition:all 0.25s;
+        }
+        .tab-btn.active {
+            background:rgba(0,245,255,0.12); color:var(--primary);
+            border:1px solid rgba(0,245,255,0.3); box-shadow:0 0 15px rgba(0,245,255,0.1);
+        }
+
+        /* Output cards */
+        .output-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:16px; }
+        @media(max-width:600px){ .output-grid{grid-template-columns:1fr} }
+
+        .output-card { background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px; min-height:100px; }
+        .card-label { font-family:'Orbitron',monospace; font-size:10px; letter-spacing:2px; color:var(--primary); text-transform:uppercase; margin-bottom:10px; display:flex; align-items:center; gap:8px; }
+        .card-content { font-size:13px; line-height:1.6; color:rgba(255,255,255,0.8); min-height:50px; }
+        #ocr-output .card-content { font-family:'Courier New',monospace; font-size:13px; color:#a8ff78; white-space:pre-wrap; word-break:break-word; }
+
+        /* Warning */
+        .warning-card { background:rgba(255,107,53,0.08); border:1px solid rgba(255,107,53,0.3); border-radius:10px; padding:12px 16px; margin-bottom:16px; font-size:13px; color:#ffb49a; display:none; }
+        .warning-card.show { display:block; }
+
+        /* OCR button */
+        .ocr-btn {
+            width:100%; padding:14px; background:linear-gradient(135deg,rgba(0,245,255,0.1),rgba(0,245,255,0.05));
+            border:1px solid rgba(0,245,255,0.4); border-radius:10px; color:var(--primary);
+            font-family:'Orbitron',monospace; font-size:12px; font-weight:700; letter-spacing:2px;
+            text-transform:uppercase; cursor:pointer; transition:all 0.3s; margin-bottom:12px;
+        }
+        .ocr-btn:hover { background:rgba(0,245,255,0.15); transform:translateY(-1px); }
+        .ocr-btn:disabled { opacity:0.4; cursor:not-allowed; transform:none; }
+
+        /* Progress */
+        .progress-bar { height:3px; background:rgba(0,245,255,0.1); border-radius:2px; margin-bottom:12px; overflow:hidden; display:none; }
+        .progress-bar.show { display:block; }
+        .progress-fill { height:100%; background:linear-gradient(90deg,var(--primary),#fff); border-radius:2px; width:0%; transition:width 0.3s; }
+
+        /* Voice card */
+        .voice-card {
+            background:var(--bg-card); border:1px solid var(--border); border-radius:10px;
+            padding:14px 16px; margin-bottom:16px; display:flex; align-items:center; gap:14px;
+        }
+        .mic-icon { width:44px; height:44px; border-radius:50%; background:rgba(0,245,255,0.1); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:20px; flex-shrink:0; }
+        .voice-text { font-size:13px; color:rgba(255,255,255,0.5); }
+        .voice-text strong { display:block; font-size:14px; color:white; margin-bottom:2px; }
+
+        .commands { display:flex; gap:8px; flex-wrap:wrap; font-size:11px; color:rgba(255,255,255,0.35); margin-bottom:30px; }
+        .cmd-tag { padding:3px 8px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1); border-radius:4px; }
+
+        /* Loading overlay */
+        #loading-overlay {
+            position:fixed; inset:0; background:var(--bg-dark); z-index:100;
+            display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; transition:opacity 0.5s;
+        }
+        #loading-overlay h2 { font-family:'Orbitron',monospace; font-size:18px; color:var(--primary); letter-spacing:3px; }
+        #loading-overlay p { font-size:12px; color:rgba(255,255,255,0.4); letter-spacing:2px; text-align:center; padding:0 20px; }
+        .loader-ring { width:60px; height:60px; border:2px solid rgba(0,245,255,0.1); border-top-color:var(--primary); border-radius:50%; animation:spin 1s linear infinite; }
+        @keyframes spin { to{transform:rotate(360deg)} }
+    </style>
+</head>
+<body>
+
+<div id="loading-overlay">
+    <div class="loader-ring"></div>
+    <h2>AI VISION</h2>
+    <p id="load-status">LOADING TENSORFLOW MODEL...</p>
+</div>
+
+<div class="container">
+    <header>
+        <h1>⬡ AI Vision Assistant</h1>
+        <p>Assistive Intelligence for Visual Impairment</p>
+    </header>
+
+    <div class="status-bar">
+        <div class="status-pill" id="pill-model"><div class="dot"></div> TF Model</div>
+        <div class="status-pill" id="pill-camera"><div class="dot"></div> Camera</div>
+        <div class="status-pill" id="pill-speech"><div class="dot"></div> Speech</div>
+        <div class="status-pill" id="pill-ocr"><div class="dot"></div> OCR</div>
+        <div class="status-pill" id="pill-voice"><div class="dot"></div> Voice Cmd</div>
+    </div>
+
+    <!-- Camera dropdown (visible only if 2+ cameras found) -->
+    <div class="camera-selector-wrap" id="camera-selector-wrap">
+        <label>📷 Select Camera:</label>
+        <select id="camera-select" onchange="switchCamera(this.value)"></select>
+    </div>
+
+    <div class="camera-wrapper">
+        <div class="scan-line"></div>
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="canvas" width="640" height="480"></canvas>
+        <div class="camera-error-msg" id="camera-error-msg">
+            <div class="err-icon">📷</div>
+            <h3>CAMERA ERROR</h3>
+            <p id="camera-error-text">Camera could not be started.</p>
+            <button class="retry-btn" onclick="retryCamera()">↺ RETRY CAMERA</button>
+        </div>
+    </div>
+
+    <div class="mode-tabs">
+        <button class="tab-btn active" onclick="setMode('detect')">🔍 Object Detect</button>
+        <button class="tab-btn" onclick="setMode('ocr')">📄 Read Text (OCR)</button>
+    </div>
+
+    <div id="ocr-section" style="display:none;">
+        <button class="ocr-btn" id="ocr-btn" onclick="runOCR()">📷 Capture & Read Text</button>
+        <div class="progress-bar" id="ocr-progress">
+            <div class="progress-fill" id="progress-fill"></div>
+        </div>
+    </div>
+
+    <div class="warning-card" id="warning-card">⚠️ <span id="warning-text"></span></div>
+
+    <div class="output-grid">
+        <div class="output-card">
+            <div class="card-label"><span>🧠</span> Scene Description</div>
+            <div class="card-content" id="description">Waiting for camera feed...</div>
+        </div>
+        <div class="output-card" id="ocr-output">
+            <div class="card-label"><span>📄</span> OCR — Text Detected</div>
+            <div class="card-content" id="ocr-result">No text scanned yet. Switch to OCR mode and tap capture.</div>
+        </div>
+    </div>
+
+    <div class="voice-card">
+        <div class="mic-icon">🎙️</div>
+        <div class="voice-text">
+            <strong id="voice-display">Listening for commands...</strong>
+            Say "stop", "read text", or "what do you see"
+        </div>
+    </div>
+
+    <div class="commands">
+        <span style="color:rgba(255,255,255,0.4);font-size:11px;">Voice commands:</span>
+        <span class="cmd-tag">"stop"</span>
+        <span class="cmd-tag">"read text"</span>
+        <span class="cmd-tag">"detect objects"</span>
+        <span class="cmd-tag">"what do you see"</span>
+    </div>
+</div>
+
+<script>
+    let model;
+    let currentMode = 'detect';
+    let lastDescription = '';
+    let ocrRunning = false;
+    let currentStream = null;
+    let detectionInterval = null;
+
+    function setPillActive(id, state = 'active') {
+        const el = document.getElementById(id);
+        if (el) el.className = 'status-pill ' + state;
+    }
+
+    // ── 1. Load TF Model ──────────────────────────────────────────────────────
+    async function loadModel() {
+        setLoadStatus('LOADING TENSORFLOW COCO-SSD MODEL...');
+        model = await cocoSsd.load();
+        setPillActive('pill-model');
+    }
+
+    // ── 2. Start Camera — DESKTOP FIXED ──────────────────────────────────────
+    async function startCamera(deviceId = null) {
+        setLoadStatus('REQUESTING CAMERA ACCESS...');
+
+        // Stop any active stream first
+        if (currentStream) {
+            currentStream.getTracks().forEach(t => t.stop());
+            currentStream = null;
+        }
+
+        const video = document.getElementById('video');
+
+        /*
+         * DESKTOP FIX:
+         * - Do NOT use facingMode:'environment' — that constraint fails on desktops
+         *   because desktop webcams don't have a facing mode label.
+         * - Just use { video: true } to get any available camera.
+         * - If user picks from dropdown, use exact deviceId.
+         */
+        const constraints = deviceId
+            ? { video: { deviceId: { exact: deviceId } } }
+            : { video: true };
+
+        currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = currentStream;
+
+        // Wait for video to be fully ready before returning
+        await new Promise((resolve, reject) => {
+            video.onloadedmetadata = () => {
+                video.play()
+                    .then(resolve)
+                    .catch(reject);
+            };
+            video.onerror = reject;
+            // Fallback timeout
+            setTimeout(reject, 10000);
+        });
+
+        hideCameraError();
+        setPillActive('pill-camera');
+
+        // Populate dropdown after permissions are granted (labels now available)
+        await populateCameraDropdown();
+    }
+
+    async function retryCamera() {
+        hideCameraError();
+        try {
+            await startCamera();
+            startDetectionLoop();
+        } catch (err) {
+            showCameraError(err);
+        }
+    }
+
+    async function populateCameraDropdown() {
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const cameras = devices.filter(d => d.kind === 'videoinput');
+            const select = document.getElementById('camera-select');
+            const wrapper = document.getElementById('camera-selector-wrap');
+
+            const activeLabel = currentStream
+                ? (currentStream.getVideoTracks()[0]?.label || '')
+                : '';
+
+            select.innerHTML = '';
+            cameras.forEach((cam, i) => {
+                const opt = document.createElement('option');
+                opt.value = cam.deviceId;
+                opt.textContent = cam.label || `Camera ${i + 1}`;
+                if (cam.label && cam.label === activeLabel) opt.selected = true;
+                select.appendChild(opt);
+            });
+
+            wrapper.style.display = cameras.length > 1 ? 'flex' : 'none';
+        } catch (e) {
+            console.warn('Camera enumeration failed:', e);
+        }
+    }
+
+    async function switchCamera(deviceId) {
+        try {
+            await startCamera(deviceId);
+        } catch (err) {
+            showCameraError(err);
+        }
+    }
+
+    function showCameraError(err) {
+        const errName = err.name || '';
+        let msg = '';
+
+        if (errName.includes('NotAllowed') || errName.includes('PermissionDenied')) {
+            msg = '❌ Camera permission denied.\n\nTo fix:\n• Click the camera 🔒 icon in your browser address bar\n• Select "Allow"\n• Click Retry below';
+        } else if (errName.includes('NotFound') || errName.includes('DevicesNotFound')) {
+            msg = '❌ No camera detected.\n\nTo fix:\n• Plug in your webcam\n• Check Device Manager to ensure it is working\n• Click Retry below';
+        } else if (errName.includes('NotReadable')) {
+            msg = '❌ Camera is busy.\n\nTo fix:\n• Close Zoom, Teams, Skype, or any app using the camera\n• Click Retry below';
+        } else if (errName.includes('OverConstrained')) {
+            msg = '❌ Camera constraint error.\n\nRetrying with default settings...';
+        } else {
+            msg = '❌ Camera error: ' + (err.message || errName) + '\n\nUse Chrome or Edge browser for best compatibility.';
+        }
+
+        document.getElementById('camera-error-text').innerText = msg;
+        document.getElementById('camera-error-msg').classList.add('show');
+        setPillActive('pill-camera', 'warn');
+    }
+
+    function hideCameraError() {
+        document.getElementById('camera-error-msg').classList.remove('show');
+    }
+
+    // ── 3. Object Detection ───────────────────────────────────────────────────
+    async function describeScene() {
+        if (!model || currentMode !== 'detect') return;
+        const video = document.getElementById('video');
+        if (!video.srcObject || video.readyState < 2 || video.paused) return;
+
+        const predictions = await model.detect(video);
+        const directions = ['left', 'center', 'right'];
+        const distanceLevels = ['nearby', 'far away'];
+        let description = 'In front of you: ';
+        let obstacles = [];
+
+        if (predictions.length === 0) {
+            description = 'No objects detected around you.';
+        } else {
+            predictions.forEach((pred, i) => {
+                const pos = directions[Math.floor(Math.random() * directions.length)];
+                const dist = distanceLevels[Math.floor(Math.random() * distanceLevels.length)];
+                const info = `${pred.class} ${dist} on your ${pos}`;
+                description += info;
+                if (['person','car','bicycle','wall','table','chair','bottle','cup','laptop'].includes(pred.class)) {
+                    obstacles.push(info);
+                }
+                if (i < predictions.length - 1) description += ', ';
+            });
+
+            if (obstacles.length > 0) {
+                const warnMsg = `Obstacle alert: ${obstacles.join('; ')}`;
+                description += `. ${warnMsg}`;
+                showWarning(warnMsg);
+            } else {
+                hideWarning();
+            }
+        }
+
+        lastDescription = description;
+        document.getElementById('description').innerText = description;
+        speak(description);
+    }
+
+    function startDetectionLoop() {
+        if (detectionInterval) clearInterval(detectionInterval);
+        detectionInterval = setInterval(describeScene, 3500);
+    }
+
+    // ── 4. Tesseract OCR ──────────────────────────────────────────────────────
+    async function runOCR() {
+        if (ocrRunning) return;
+        const video = document.getElementById('video');
+        if (!video.srcObject || video.readyState < 2) {
+            speak('Camera is not ready yet.'); return;
+        }
+
+        ocrRunning = true;
+        const btn = document.getElementById('ocr-btn');
+        const progressBar = document.getElementById('ocr-progress');
+        const progressFill = document.getElementById('progress-fill');
+        const resultEl = document.getElementById('ocr-result');
+
+        btn.disabled = true;
+        btn.textContent = '⏳ Scanning...';
+        progressBar.classList.add('show');
+        progressFill.style.width = '5%';
+        setPillActive('pill-ocr', 'warn');
+        speak('Scanning for text. Please hold the camera steady.');
+
+        // Capture frame
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        try {
+            const worker = await Tesseract.createWorker('eng', 1, {
+                logger: m => {
+                    if (m.status === 'recognizing text') {
+                        progressFill.style.width = Math.max(5, Math.round(m.progress * 100)) + '%';
+                    }
+                }
+            });
+
+            const { data: { text } } = await worker.recognize(canvas);
+            await worker.terminate();
+
+            progressFill.style.width = '100%';
+            const clean = text.trim();
+
+            if (clean.length > 2) {
+                resultEl.innerText = clean;
+                speak('Text detected: ' + clean);
+                setPillActive('pill-ocr', 'active');
+            } else {
+                resultEl.innerText = 'No readable text found.\nTry pointing at a sign, book, or printed text.';
+                speak('No readable text detected. Try pointing at clear printed text.');
+                setPillActive('pill-ocr', '');
+            }
+        } catch (err) {
+            console.error('OCR Error:', err);
+            resultEl.innerText = 'OCR Error: ' + (err.message || err);
+            speak('Text reading failed. Please try again.');
+            setPillActive('pill-ocr', '');
+        }
+
+        setTimeout(() => { progressBar.classList.remove('show'); progressFill.style.width = '0%'; }, 800);
+        btn.disabled = false;
+        btn.textContent = '📷 Capture & Read Text';
+        ocrRunning = false;
+    }
+
+    // ── 5. Speech ─────────────────────────────────────────────────────────────
+    function speak(text) {
+        window.speechSynthesis.cancel();
+        const s = new SpeechSynthesisUtterance(text);
+        s.rate = 0.95; s.pitch = 1;
+        window.speechSynthesis.speak(s);
+        setPillActive('pill-speech');
+    }
+
+    // ── 6. Voice Recognition ──────────────────────────────────────────────────
+    function startVoiceRecognition() {
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SR) {
+            document.getElementById('voice-display').innerText = 'Voice commands not supported in this browser (use Chrome).';
+            return;
+        }
+        const rec = new SR();
+        rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = false;
+
+        rec.onresult = e => {
+            const t = e.results[e.results.length - 1][0].transcript.toLowerCase().trim();
+            document.getElementById('voice-display').innerText = `"${t}"`;
+
+            if (t.includes('stop')) {
+                speak('Stopping. Goodbye.'); setTimeout(() => location.reload(), 2000);
+            } else if (t.includes('read text') || t.includes('scan text') || t.includes('what does it say')) {
+                setMode('ocr'); speak('Switching to text reading mode.'); setTimeout(runOCR, 800);
+            } else if (t.includes('detect') || t.includes('what do you see') || t.includes('describe')) {
+                setMode('detect'); speak('Switching to object detection.'); if (lastDescription) speak(lastDescription);
+            } else {
+                speak('You said: ' + t);
+            }
+        };
+
+        rec.onerror = e => { if (e.error !== 'no-speech') console.warn('Voice error:', e.error); };
+        rec.onend = () => { try { rec.start(); } catch(e){} };
+        rec.start();
+        setPillActive('pill-voice');
+    }
+
+    // ── 7. Mode Toggle ────────────────────────────────────────────────────────
+    function setMode(mode) {
+        currentMode = mode;
+        document.querySelectorAll('.tab-btn').forEach((b, i) => {
+            b.classList.toggle('active', (i === 0 && mode === 'detect') || (i === 1 && mode === 'ocr'));
+        });
+        document.getElementById('ocr-section').style.display = mode === 'ocr' ? 'block' : 'none';
+    }
+
+    function showWarning(m) { document.getElementById('warning-text').innerText = m; document.getElementById('warning-card').classList.add('show'); }
+    function hideWarning() { document.getElementById('warning-card').classList.remove('show'); }
+    function setLoadStatus(m) { const el = document.getElementById('load-status'); if (el) el.textContent = m; }
+    function hideLoader() {
+        const o = document.getElementById('loading-overlay');
+        o.style.opacity = '0'; setTimeout(() => o.remove(), 500);
+    }
+
+    // ── INIT ──────────────────────────────────────────────────────────────────
+    window.onload = async () => {
+        try {
+            await loadModel();
+            await startCamera();        // ← Desktop webcam starts here
+            setLoadStatus('READY ✓');
+            hideLoader();
+            startDetectionLoop();
+            startVoiceRecognition();
+            speak('AI Vision Assistant is ready. Object detection is active.');
+        } catch (err) {
+            console.error('Init error:', err);
+            hideLoader();
+            // Camera errors shown inside feed; other errors on overlay
+            if (err.name && (err.name.includes('NotAllowed') || err.name.includes('NotFound') || err.name.includes('NotReadable') || err.name.includes('OverConstrained'))) {
+                showCameraError(err);
+            } else {
+                setLoadStatus('ERROR: ' + (err.message || err));
+                document.getElementById('load-status').style.color = '#ff6b6b';
+                setTimeout(hideLoader, 6000);
+            }
+        }
+    };
+</script>
+</body>
+</html>
